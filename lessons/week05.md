@@ -7,7 +7,7 @@ kinds of potions (health potions and damage potions). In part 09 we'll add
 another type of non-equipment item, and then in later weeks we'll add equipment
 eventually.
 
-### Place 08.a: Placing Items And Displaying Them
+### Part 08.a: Placing Items And Displaying Them
 
 So the first thing that we need to do is declare a type for items. An item is..
 probably one of several situations, like you find a potion or a bomb or a sword
@@ -222,7 +222,7 @@ So now we can turn on the game and see some green and red potions on the ground.
 
 ![potions](https://github.com/Lokathor/roguelike-tutorial-2018/blob/master/screenshots/week05-01.png)
 
-### Place 08.b: Auto-pickup
+### Part 08.b: Auto-pickup
 
 Now we just need to change it so that if the player steps into a place with an
 item they also grab the item as part of that. There's no inventory limit, and it
@@ -258,7 +258,7 @@ And after we've updated the player's location, we add a little more.
 
 That's all there is to it.
 
-### Place 08.c: Cataloging Items
+### Part 08.c: Cataloging Items
 
 So now we want to display the current inventory. To do this we want to make a
 concept of the user's display being in different modes.
@@ -541,7 +541,7 @@ pub enum Item {
 
 Aaaannnnddd..... that's it. That's _all_ we had to change. Neat.
 
-### Place 08.d: Drinking Items
+### Part 08.d: Drinking Items
 
 So now we'll make the potion of health and potion of gain strength actually have
 an effect.
@@ -728,7 +728,7 @@ really having a good inventory API, so we'll make `Item` by `Copy` for now.
   }
 ```
 
-### Place 08.e: Equipping Items
+### Part 08.e: Equipping Items
 
 Ha, you thought that we'd do all the basic item stuff at the same time? How foolish!
 
