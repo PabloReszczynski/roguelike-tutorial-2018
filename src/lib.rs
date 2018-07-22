@@ -4,12 +4,16 @@
 extern crate dwarf_term;
 pub(crate) use dwarf_term::*;
 
+extern crate serde;
+
+#[macro_use]
+extern crate serde_derive;
+
 // std
 pub(crate) use std::collections::hash_map::*;
 pub(crate) use std::collections::hash_set::*;
 pub(crate) use std::collections::BTreeMap;
 pub(crate) use std::ops::*;
-pub(crate) use std::sync::atomic::*;
 
 pub mod pathing;
 pub use pathing::*;
@@ -25,7 +29,7 @@ pub const BOMB_GLYPH: u8 = 15 + 0 * 16;
 pub const TERULO_BROWN: u32 = rgb32!(197, 139, 5);
 pub const KESTREL_RED: u32 = rgb32!(166, 0, 0);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Item {
   PotionHealth,
   PotionStrength,
@@ -61,15 +65,18 @@ impl ::std::fmt::Display for Item {
   }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Default, Hash)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default, Hash, Serialize, Deserialize)]
 pub struct Location {
   pub x: i32,
   pub y: i32,
+  pub z: i32,
 }
 
+/// Iterates over the 4 cardinal directions.
 struct LocationNeighborsIter {
   x: i32,
   y: i32,
+  z: i32,
   index: usize,
 }
 impl Iterator for LocationNeighborsIter {
@@ -78,19 +85,35 @@ impl Iterator for LocationNeighborsIter {
     match self.index {
       0 => {
         self.index += 1;
-        Some(Location { x: self.x + 1, y: self.y })
+        Some(Location {
+          x: self.x + 1,
+          y: self.y,
+          z: self.z,
+        })
       }
       1 => {
         self.index += 1;
-        Some(Location { x: self.x - 1, y: self.y })
+        Some(Location {
+          x: self.x - 1,
+          y: self.y,
+          z: self.z,
+        })
       }
       2 => {
         self.index += 1;
-        Some(Location { x: self.x, y: self.y + 1 })
+        Some(Location {
+          x: self.x,
+          y: self.y + 1,
+          z: self.z,
+        })
       }
       3 => {
         self.index += 1;
-        Some(Location { x: self.x, y: self.y - 1 })
+        Some(Location {
+          x: self.x,
+          y: self.y - 1,
+          z: self.z,
+        })
       }
       _ => None,
     }
@@ -98,18 +121,11 @@ impl Iterator for LocationNeighborsIter {
 }
 
 impl Location {
-  /*
-  pub fn as_usize_tuple(self) -> (usize, usize) {
-    (self.x as usize, self.y as usize)
-  }
-  pub fn as_i32_tuple(self) -> (i32, i32) {
-    (self.x, self.y)
-  }
-  */
   pub fn neighbors(&self) -> impl Iterator<Item = Location> {
     LocationNeighborsIter {
       x: self.x,
       y: self.y,
+      z: self.z,
       index: 0,
     }
   }
@@ -121,6 +137,7 @@ impl Add for Location {
     Location {
       x: self.x + other.x,
       y: self.y + other.y,
+      z: self.z + other.z,
     }
   }
 }
@@ -131,11 +148,12 @@ impl Sub for Location {
     Location {
       x: self.x - other.x,
       y: self.y - other.y,
+      z: self.z - other.z,
     }
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Creature {
   pub icon: u8,
   pub color: u32,
@@ -146,39 +164,41 @@ pub struct Creature {
   pub inventory: Vec<Item>,
 }
 impl Creature {
-  fn new(icon: u8, color: u32) -> Self {
+  fn new(cid: usize, icon: u8, color: u32) -> Self {
     Creature {
       icon,
       color,
       is_the_player: false,
-      id: CreatureID::atomic_new(),
+      id: CreatureID(cid),
       hit_points: 1,
       damage_step: 1,
       inventory: vec![],
     }
   }
 
-  fn new_player() -> Self {
-    let mut out = Self::new(b'@', TERULO_BROWN);
+  fn new_player(cid: usize) -> Self {
+    let mut out = Self::new(cid, b'@', TERULO_BROWN);
     out.is_the_player = true;
     out.hit_points = 20;
     out.damage_step = 5;
     out
   }
 
-  fn new_kestrel() -> Self {
-    let mut out = Self::new(b'k', KESTREL_RED);
+  fn new_kestrel(cid: usize) -> Self {
+    let mut out = Self::new(cid, b'k', KESTREL_RED);
     out.hit_points = 8;
     out.damage_step = 3;
     out
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Terrain {
   Wall,
   Floor,
   Ice,
+  StairsDown,
+  StairsUp,
 }
 
 impl Default for Terrain {
@@ -292,98 +312,133 @@ fn make_cellular_caves(width: usize, height: usize, gen: &mut PCG32) -> VecImage
   }
 }
 
-// we're setting aside '0' for a "null" type value, so the initial next value
-// starts at 1.
-static NEXT_CREATURE_ID: AtomicUsize = AtomicUsize::new(1);
-
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CreatureID(pub usize);
 
-impl CreatureID {
-  fn atomic_new() -> Self {
-    CreatureID(NEXT_CREATURE_ID.fetch_add(1, Ordering::SeqCst))
-  }
-}
-
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct GameWorld {
   pub player_location: Location,
+  pub next_creature_id: usize,
   pub creature_list: Vec<Creature>,
   pub creature_locations: HashMap<Location, CreatureID>,
   pub item_locations: HashMap<Location, Vec<Item>>,
   pub terrain: HashMap<Location, Terrain>,
   pub gen: PCG32,
+  pub deepest_depth: i32,
 }
+const GAME_DIMENSIONS: usize = 50;
 
 impl GameWorld {
   pub fn new(seed: u64) -> Self {
+    // Make our world
     let mut out = Self {
-      player_location: Location { x: 5, y: 5 },
+      player_location: Location { x: 0, y: 0, z: 0 },
+      next_creature_id: 1,
       creature_list: vec![],
       creature_locations: HashMap::new(),
       item_locations: HashMap::new(),
       terrain: HashMap::new(),
       gen: PCG32::new(seed),
+      deepest_depth: 1,
     };
-    let caves = make_cellular_caves(100, 100, &mut out.gen);
-    for (x, y, tile) in caves.iter() {
-      out
-        .terrain
-        .insert(Location { x: x as i32, y: y as i32 }, if *tile { Terrain::Wall } else { Terrain::Floor });
-    }
 
-    // add the player
-    let mut player = Creature::new_player();
-    let player_start = out.pick_random_floor();
+    // Generate the player
+    let mut player = Creature::new_player(out.next_creature_id);
+    out.next_creature_id += 1;
+
+    // Add the first z-layer.
+    out.add_z_layer(None);
+
+    // Place the Player
+    let player_start = out.pick_random_floor(out.deepest_depth);
     let player_id = player.id.0;
     out.creature_list.push(player);
     out.creature_locations.insert(player_start, CreatureID(player_id));
     out.player_location = player_start;
 
-    // add the enemies
-    for _ in 0..50 {
-      let monster = Creature::new_kestrel();
+    out
+  }
+
+  pub fn add_z_layer(&mut self, down_stairs: Option<Location>) {
+    self.deepest_depth -= 1;
+
+    // Generate a new z layer, with optional constraint
+    let caves: VecImage<bool> = match down_stairs {
+      None => make_cellular_caves(GAME_DIMENSIONS, GAME_DIMENSIONS, &mut self.gen),
+      Some(stairs) => 'cave: loop {
+        let potential = make_cellular_caves(GAME_DIMENSIONS, GAME_DIMENSIONS, &mut self.gen);
+        let center = (stairs.x as usize, stairs.y as usize);
+        for xy in Some(center)
+          .into_iter()
+          .chain(stairs.neighbors().map(|loc| (loc.x as usize, loc.y as usize)))
+        {
+          if !potential[xy] {
+            break 'cave potential;
+          }
+        }
+      },
+    };
+
+    // Place the Terrain
+    for (x, y, tile) in caves.iter() {
+      self.terrain.insert(
+        Location {
+          x: x as i32,
+          y: y as i32,
+          z: self.deepest_depth,
+        },
+        if *tile { Terrain::Wall } else { Terrain::Floor },
+      );
+    }
+    // Add the stairs back up, if necessary
+    down_stairs.map(|loc| self.terrain.insert(loc + Location { x: 0, y: 0, z: -1 }, Terrain::StairsUp));
+    // Add some stairs even deeper
+    let stairs_place = self.pick_random_floor(self.deepest_depth);
+    self.terrain.insert(stairs_place, Terrain::StairsDown);
+
+    // Place the Creatures
+    for _ in 0..(GAME_DIMENSIONS / 2) {
+      let monster = Creature::new_kestrel(self.next_creature_id);
+      self.next_creature_id += 1;
       let monster_id = monster.id.0;
-      let monster_start = out.pick_random_floor();
-      match out.creature_locations.entry(monster_start) {
+      let monster_start = self.pick_random_floor(self.deepest_depth);
+      match self.creature_locations.entry(monster_start) {
         Entry::Occupied(_) => {
           // if we happen to pick an occupied location, just don't add a
           // creature for this pass of the loop.
           continue;
         }
         Entry::Vacant(ve) => {
-          out.creature_list.push(monster);
+          self.creature_list.push(monster);
           ve.insert(CreatureID(monster_id));
         }
       }
     }
 
-    // add some items
-    for _ in 0..100 {
-      let item_spot = out.pick_random_floor();
-      let new_item = match out.gen.next_u32() >> 30 {
+    // Place the Items
+    for _ in 0..GAME_DIMENSIONS {
+      let item_spot = self.pick_random_floor(self.deepest_depth);
+      let new_item = match self.gen.next_u32() >> 30 {
         0 => Item::PotionHealth,
         1 => Item::PotionStrength,
         2 => Item::BombBlast,
         3 => Item::BombIce,
         _ => unreachable!(),
       };
-      out.item_locations.entry(item_spot).or_insert(Vec::new()).push(new_item);
+      self.item_locations.entry(item_spot).or_insert(Vec::new()).push(new_item);
     }
-
-    out
   }
 
-  pub fn pick_random_floor(&mut self) -> Location {
-    let indexer = RandRangeInclusive32::new(0..=99);
+  pub fn pick_random_floor(&mut self, z: i32) -> Location {
+    let indexer = RandRangeInclusive32::new(0..=(GAME_DIMENSIONS as u32 - 1));
     let mut tries = 0;
     let mut x = indexer.roll_with(&mut self.gen) as usize;
     let mut y = indexer.roll_with(&mut self.gen) as usize;
-    let mut loc = Location { x: x as i32, y: y as i32 };
+    let mut loc = Location { x: x as i32, y: y as i32, z };
     while self.terrain[&loc] != Terrain::Floor {
       x = indexer.roll_with(&mut self.gen) as usize;
       y = indexer.roll_with(&mut self.gen) as usize;
-      loc = Location { x: x as i32, y: y as i32 };
+      loc = Location { x: x as i32, y: y as i32, z };
       if tries > 5000 {
         panic!("couldn't find a floor tile!");
       }
@@ -416,7 +471,7 @@ impl GameWorld {
             // Accidentally bumping a wall doesn't consume a turn.
             return;
           }
-          Terrain::Floor => {
+          Terrain::Floor | Terrain::StairsDown | Terrain::StairsUp => {
             let player_id = self
               .creature_locations
               .remove(&self.player_location)
@@ -438,7 +493,20 @@ impl GameWorld {
       }
     }
     self.run_world_turn();
-    println!("turn over!");
+  }
+
+  pub fn change_floor(&mut self, floor_delta: i32) {
+    let player_terrain = self.terrain[&self.player_location];
+    match (player_terrain, floor_delta) {
+      (Terrain::StairsDown, -1) => {
+        if self.player_location.z == self.deepest_depth {
+          self.add_z_layer(Some(self.player_location));
+        }
+        self.move_player(Location { x: 0, y: 0, z: -1 })
+      }
+      (Terrain::StairsUp, 1) => self.move_player(Location { x: 0, y: 0, z: 1 }),
+      _ => {}
+    }
   }
 
   pub fn use_item(&mut self, item_letter: char) -> UseItemResult {
@@ -486,11 +554,12 @@ impl GameWorld {
       Some(Item::BombBlast) => {
         let mut blast_locations = vec![];
         let blast_center = self.player_location + target_delta;
+        let z = self.player_location.z;
         ppfov(
           (blast_center.x, blast_center.y),
           2,
-          |x, y| self.terrain[&Location { x, y }] == Terrain::Wall,
-          |x, y| blast_locations.push(Location { x, y }),
+          |x, y| self.terrain[&Location { x, y, z }] == Terrain::Wall,
+          |x, y| blast_locations.push(Location { x, y, z }),
         );
         let mut blast_targets = vec![];
         for location in blast_locations.into_iter() {
@@ -513,11 +582,12 @@ impl GameWorld {
       Some(Item::BombIce) => {
         let mut blast_locations = vec![];
         let blast_center = self.player_location + target_delta;
+        let z = self.player_location.z;
         ppfov(
           (blast_center.x, blast_center.y),
           1,
           |_, _| false, /* vision check doesn't matter on radius 1 fov */
-          |x, y| blast_locations.push(Location { x, y }),
+          |x, y| blast_locations.push(Location { x, y, z }),
         );
         for location in blast_locations.into_iter() {
           if *self.terrain.entry(location).or_insert(Terrain::Wall) == Terrain::Floor {
@@ -577,15 +647,16 @@ impl GameWorld {
           let seen_locations = {
             let terrain_ref = &self.terrain;
             let mut seen_locations = HashSet::new();
+            let z = loc.z;
             ppfov(
               (loc.x, loc.y),
               7,
               |x, y| {
-                let here = *terrain_ref.get(&Location { x, y }).unwrap_or(&Terrain::Wall);
+                let here = *terrain_ref.get(&Location { x, y, z }).unwrap_or(&Terrain::Wall);
                 here == Terrain::Wall || here == Terrain::Ice
               },
               |x, y| {
-                seen_locations.insert(Location { x, y });
+                seen_locations.insert(Location { x, y, z });
               },
             );
             seen_locations
@@ -600,10 +671,10 @@ impl GameWorld {
             path[1]
           } else {
             loc + match self.gen.next_u32() >> 30 {
-              0 => Location { x: 0, y: 1 },
-              1 => Location { x: 0, y: -1 },
-              2 => Location { x: 1, y: 0 },
-              3 => Location { x: -1, y: 0 },
+              0 => Location { x: 0, y: 1, z: 0 },
+              1 => Location { x: 0, y: -1, z: 0 },
+              2 => Location { x: 1, y: 0, z: 0 },
+              3 => Location { x: -1, y: 0, z: 0 },
               impossible => unreachable!("u32 >> 30: {}", impossible),
             }
           };
@@ -634,7 +705,7 @@ impl GameWorld {
               Terrain::Wall | Terrain::Ice => {
                 continue;
               }
-              Terrain::Floor => {
+              Terrain::Floor | Terrain::StairsDown | Terrain::StairsUp => {
                 let id = self.creature_locations.remove(&loc).expect("The creature wasn't where they should be!");
                 let old_id = self.creature_locations.insert(move_target, id);
                 debug_assert!(old_id.is_none());

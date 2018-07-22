@@ -44,7 +44,7 @@ pub fn step(gen: &mut PCG32, mut step: i32) -> i32 {
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PCG32 {
   state: u64,
 }

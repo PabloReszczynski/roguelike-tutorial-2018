@@ -9,6 +9,10 @@ pub use dwarf_term::*;
 extern crate roguelike_tutorial_2018;
 use roguelike_tutorial_2018::*;
 
+extern crate serde;
+
+extern crate bincode;
+
 // std
 use std::collections::btree_map::*;
 use std::collections::hash_set::*;
@@ -45,14 +49,16 @@ fn main() {
           running = false;
         }
         WindowEvent::KeyboardInput {
-          input: KeyboardInput {
-            state: ElementState::Pressed,
-            virtual_keycode: Some(key),
-            ..
-          },
+          input:
+            KeyboardInput {
+              state: ElementState::Pressed,
+              virtual_keycode: Some(key),
+              modifiers: mods,
+              ..
+            },
           ..
         } => {
-          pending_keys.push(key);
+          pending_keys.push((key, mods.shift));
         }
         _ => {}
       },
@@ -65,25 +71,33 @@ fn main() {
     for key in pending_keys.drain(..) {
       match display_mode {
         DisplayMode::Game => match key {
-          VirtualKeyCode::Up => game.move_player(Location { x: 0, y: 1 }),
-          VirtualKeyCode::Down => game.move_player(Location { x: 0, y: -1 }),
-          VirtualKeyCode::Left => game.move_player(Location { x: -1, y: 0 }),
-          VirtualKeyCode::Right => game.move_player(Location { x: 1, y: 0 }),
-          VirtualKeyCode::I => display_mode = DisplayMode::Inventory,
+          (VirtualKeyCode::Up, false) => game.move_player(Location { x: 0, y: 1, z: 0 }),
+          (VirtualKeyCode::Down, false) => game.move_player(Location { x: 0, y: -1, z: 0 }),
+          (VirtualKeyCode::Left, false) => game.move_player(Location { x: -1, y: 0, z: 0 }),
+          (VirtualKeyCode::Right, false) => game.move_player(Location { x: 1, y: 0, z: 0 }),
+          (VirtualKeyCode::I, false) => display_mode = DisplayMode::Inventory,
+          (VirtualKeyCode::F5, false) => {
+            save_game(&game).ok();
+          }
+          (VirtualKeyCode::F6, false) => {
+            load_game(&mut game).ok();
+          }
+          (VirtualKeyCode::Period, true) => game.change_floor(-1),
+          (VirtualKeyCode::Comma, true) => game.change_floor(1),
           _ => {}
         },
         DisplayMode::Inventory => match key {
-          VirtualKeyCode::Escape => display_mode = DisplayMode::Game,
-          other => {
+          (VirtualKeyCode::Escape, false) => display_mode = DisplayMode::Game,
+          (other, shift) => {
             letter_of(other).map(|ch| {
-              if ch.is_alphabetic() {
+              if ch.is_alphabetic() && !shift {
                 match game.use_item(ch) {
                   UseItemResult::NoSuchItem => {}
                   UseItemResult::ItemUsed => {
                     display_mode = DisplayMode::Game;
                   }
                   UseItemResult::ItemNeedsTarget => {
-                    display_mode = DisplayMode::ItemTargeting(ch, Location { x: 0, y: 0 });
+                    display_mode = DisplayMode::ItemTargeting(ch, Location { x: 0, y: 0, z: 0 });
                   }
                 }
               }
@@ -91,17 +105,17 @@ fn main() {
           }
         },
         DisplayMode::ItemTargeting(letter, delta) => match key {
-          VirtualKeyCode::Escape => display_mode = DisplayMode::Game,
-          VirtualKeyCode::Return => {
+          (VirtualKeyCode::Escape, false) => display_mode = DisplayMode::Game,
+          (VirtualKeyCode::Return, false) => {
             game.use_targeted_item(letter, delta);
             display_mode = DisplayMode::Game;
           }
-          VirtualKeyCode::Up | VirtualKeyCode::Down | VirtualKeyCode::Left | VirtualKeyCode::Right => {
-            let delta_change = match key {
-              VirtualKeyCode::Up => Location { x: 0, y: 1 },
-              VirtualKeyCode::Down => Location { x: 0, y: -1 },
-              VirtualKeyCode::Left => Location { x: -1, y: 0 },
-              VirtualKeyCode::Right => Location { x: 1, y: 0 },
+          (VirtualKeyCode::Up, false) | (VirtualKeyCode::Down, false) | (VirtualKeyCode::Left, false) | (VirtualKeyCode::Right, false) => {
+            let delta_change = match key.0 {
+              VirtualKeyCode::Up => Location { x: 0, y: 1, z: 0 },
+              VirtualKeyCode::Down => Location { x: 0, y: -1, z: 0 },
+              VirtualKeyCode::Left => Location { x: -1, y: 0, z: 0 },
+              VirtualKeyCode::Right => Location { x: 1, y: 0, z: 0 },
               _ => unreachable!(),
             };
             let new_delta = delta + delta_change;
@@ -119,17 +133,18 @@ fn main() {
     // should probably make this part of the GameWorld so that it can refresh it
     // when necessary and then we just read that.
     seen_set.clear();
+    let z = game.player_location.z;
     ppfov(
       (game.player_location.x, game.player_location.y),
       FOV_DISPLAY_RANGE,
       |x, y| {
         game
           .terrain
-          .get(&Location { x, y })
+          .get(&Location { x, y, z })
           .map(|&t| t == Terrain::Wall || t == Terrain::Ice)
           .unwrap_or(true)
       },
-      |x, y| drop(seen_set.insert(Location { x, y })),
+      |x, y| drop(seen_set.insert(Location { x, y, z })),
     );
     {
       match display_mode {
@@ -194,6 +209,7 @@ fn draw_game(term: &mut DwarfTerm, game: &GameWorld, seen_set: &HashSet<Location
   let offset = game.player_location - Location {
     x: (fgs.width() / 2) as i32,
     y: (fgs.height() / 2) as i32,
+    z: game.player_location.z,
   };
   // draw the map, save space for the status line.
   const STATUS_HEIGHT: usize = 1;
@@ -203,6 +219,7 @@ fn draw_game(term: &mut DwarfTerm, game: &GameWorld, seen_set: &HashSet<Location
     let loc_for_this_screen_position = Location {
       x: scr_x as i32,
       y: scr_y as i32,
+      z: game.player_location.z,
     } + offset;
     let (glyph, color) = if seen_set.contains(&loc_for_this_screen_position) {
       match game.creature_locations.get(&loc_for_this_screen_position) {
@@ -227,6 +244,8 @@ fn draw_game(term: &mut DwarfTerm, game: &GameWorld, seen_set: &HashSet<Location
             Some(Terrain::Wall) => (WALL_TILE, rgb32!(155, 75, 0)),
             Some(Terrain::Ice) => (WALL_TILE, rgb32!(112, 146, 190)),
             Some(Terrain::Floor) => (b'.', rgb32!(128, 128, 128)),
+            Some(Terrain::StairsDown) => (b'>', rgb32!(190, 190, 190)),
+            Some(Terrain::StairsUp) => (b'<', rgb32!(190, 190, 190)),
             None => (b' ', 0),
           },
         },
@@ -252,7 +271,13 @@ fn draw_game(term: &mut DwarfTerm, game: &GameWorld, seen_set: &HashSet<Location
     .find(|creature_ref| creature_ref.is_the_player)
     .unwrap()
     .hit_points;
-  write!(status_line_u8_slice_mut, "HP: {}, Enemies: {}", player_hp, game.creature_list.len() - 1).ok();
+  write!(
+    status_line_u8_slice_mut,
+    "HP: {}, Enemies: {}, Z:{}",
+    player_hp,
+    game.creature_list.len() - 1,
+    game.player_location.z
+  ).ok();
 }
 
 fn draw_inventory(term: &mut DwarfTerm, game: &GameWorld) {
@@ -338,6 +363,7 @@ fn draw_targeting(term: &mut DwarfTerm, game: &GameWorld, seen_set: &HashSet<Loc
   let offset = game.player_location - Location {
     x: (fgs.width() / 2) as i32,
     y: (fgs.height() / 2) as i32,
+    z: game.player_location.z,
   };
   let target_delta_location = game.player_location + delta;
   // draw the map, save space for the status line.
@@ -348,6 +374,7 @@ fn draw_targeting(term: &mut DwarfTerm, game: &GameWorld, seen_set: &HashSet<Loc
     let loc_for_this_screen_position = Location {
       x: scr_x as i32,
       y: scr_y as i32,
+      z: game.player_location.z,
     } + offset;
     let (glyph, color) = if seen_set.contains(&loc_for_this_screen_position) {
       match game.creature_locations.get(&loc_for_this_screen_position) {
@@ -372,6 +399,8 @@ fn draw_targeting(term: &mut DwarfTerm, game: &GameWorld, seen_set: &HashSet<Loc
             Some(Terrain::Wall) => (WALL_TILE, rgb32!(155, 75, 0)),
             Some(Terrain::Ice) => (WALL_TILE, rgb32!(112, 146, 190)),
             Some(Terrain::Floor) => (b'.', rgb32!(128, 128, 128)),
+            Some(Terrain::StairsDown) => (b'>', rgb32!(190, 190, 190)),
+            Some(Terrain::StairsUp) => (b'<', rgb32!(190, 190, 190)),
             None => (b' ', 0),
           },
         },
@@ -387,4 +416,21 @@ fn draw_targeting(term: &mut DwarfTerm, game: &GameWorld, seen_set: &HashSet<Loc
       bgs[(scr_x, scr_y)] = !bgs[(scr_x, scr_y)] | FULL_ALPHA;
     }
   }
+}
+
+fn save_game(game: &GameWorld) -> std::io::Result<()> {
+  let mut f = std::fs::File::create("kasidin.save")?;
+  let encoded: Vec<u8> =
+    bincode::serialize(&game).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Couldn't serialize the game!"))?;
+  f.write_all(&encoded)
+}
+
+fn load_game(game: &mut GameWorld) -> std::io::Result<()> {
+  let mut f = std::fs::File::open("kasidin.save")?;
+  let mut file_bytes: Vec<u8> = vec![];
+  f.read_to_end(&mut file_bytes)?;
+  let decoded: GameWorld =
+    bincode::deserialize(&file_bytes).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Couldn't deserialize the game!"))?;
+  *game = decoded;
+  Ok(())
 }
