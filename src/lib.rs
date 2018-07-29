@@ -22,10 +22,6 @@ pub use precise_permissive_fov::*;
 pub mod prng;
 pub use prng::*;
 
-pub const WALL_TILE: u8 = 11 + 13 * 16;
-pub const POTION_GLYPH: u8 = 13 + 10 * 16;
-pub const BOMB_GLYPH: u8 = 15 + 0 * 16;
-
 pub const TERULO_BROWN: u32 = rgb32!(197, 139, 5);
 pub const KESTREL_RED: u32 = rgb32!(166, 0, 0);
 
@@ -35,13 +31,28 @@ pub enum Item {
   PotionStrength,
   BombBlast,
   BombIce,
+  Dagger(i8),
+  Warhammer(i8),
+  Fernweave(i8),
+  LobsterMail(i8),
+  CrystalPlate(i8),
 }
 
 impl Item {
-  fn is_potion(self) -> bool {
+  fn armor_value(self) -> i32 {
     match self {
-      Item::PotionHealth | Item::PotionStrength => true,
-      _ => false,
+      Item::Fernweave(x) => 2 + x as i32,
+      Item::LobsterMail(x) => 5 + x as i32,
+      Item::CrystalPlate(x) => 7 + x as i32,
+      _ => 0,
+    }
+  }
+
+  fn damage_step(self) -> i32 {
+    match self {
+      Item::Dagger(x) => 2 + x as i32,
+      Item::Warhammer(x) => 7 + x as i32,
+      _ => 0,
     }
   }
 }
@@ -61,6 +72,11 @@ impl ::std::fmt::Display for Item {
       Item::PotionStrength => write!(f, "Potion of Gain Strength"),
       Item::BombBlast => write!(f, "Blast Bomb"),
       Item::BombIce => write!(f, "Ice Bomb"),
+      Item::Dagger(x) => write!(f, "Dagger {}{}", if *x >= 0 { "+" } else { "-" }, x),
+      Item::Warhammer(x) => write!(f, "Warhammer {}{}", if *x >= 0 { "+" } else { "-" }, x),
+      Item::Fernweave(x) => write!(f, "Fernweave {}{}", if *x >= 0 { "+" } else { "-" }, x),
+      Item::LobsterMail(x) => write!(f, "Lobster Mail {}{}", if *x >= 0 { "+" } else { "-" }, x),
+      Item::CrystalPlate(x) => write!(f, "Crystal Plate {}{}", if *x >= 0 { "+" } else { "-" }, x),
     }
   }
 }
@@ -161,7 +177,10 @@ pub struct Creature {
   pub id: CreatureID,
   pub hit_points: i32,
   pub damage_step: i32,
+  pub armor: i32,
   pub inventory: Vec<Item>,
+  pub equipped_weapon: Option<Item>,
+  pub equipped_armor: Option<Item>,
 }
 impl Creature {
   fn new(cid: usize, icon: u8, color: u32) -> Self {
@@ -172,7 +191,10 @@ impl Creature {
       id: CreatureID(cid),
       hit_points: 1,
       damage_step: 1,
+      armor: 0,
       inventory: vec![],
+      equipped_weapon: None,
+      equipped_armor: None,
     }
   }
 
@@ -184,9 +206,9 @@ impl Creature {
     out
   }
 
-  fn new_kestrel(cid: usize) -> Self {
+  fn new_kestrel(cid: usize, depth: i32) -> Self {
     let mut out = Self::new(cid, b'k', KESTREL_RED);
-    out.hit_points = 8;
+    out.hit_points = 8 + depth.abs();
     out.damage_step = 3;
     out
   }
@@ -398,7 +420,7 @@ impl GameWorld {
 
     // Place the Creatures
     for _ in 0..(GAME_DIMENSIONS / 2) {
-      let monster = Creature::new_kestrel(self.next_creature_id);
+      let monster = Creature::new_kestrel(self.next_creature_id, self.deepest_depth);
       self.next_creature_id += 1;
       let monster_id = monster.id.0;
       let monster_start = self.pick_random_floor(self.deepest_depth);
@@ -415,16 +437,22 @@ impl GameWorld {
       }
     }
 
+    // Figure out what the chances of a random item dropping are.
+    let depth_u32 = self.deepest_depth.abs() as u32;
+    let mut item_frequencies = FrequencyChart::new(Item::PotionStrength, depth_u32);
+    item_frequencies.push_item(Item::PotionHealth, depth_u32 + 20);
+    item_frequencies.push_item(Item::BombBlast, depth_u32);
+    item_frequencies.push_item(Item::BombIce, depth_u32.saturating_sub(10));
+    item_frequencies.push_item(Item::Dagger(0), depth_u32 + 5);
+    item_frequencies.push_item(Item::Warhammer(0), 2 * depth_u32);
+    item_frequencies.push_item(Item::Fernweave(0), depth_u32 / 2 + 5);
+    item_frequencies.push_item(Item::LobsterMail(0), depth_u32);
+    item_frequencies.push_item(Item::CrystalPlate(0), depth_u32);
+
     // Place the Items
     for _ in 0..GAME_DIMENSIONS {
       let item_spot = self.pick_random_floor(self.deepest_depth);
-      let new_item = match self.gen.next_u32() >> 30 {
-        0 => Item::PotionHealth,
-        1 => Item::PotionStrength,
-        2 => Item::BombBlast,
-        3 => Item::BombIce,
-        _ => unreachable!(),
-      };
+      let new_item = item_frequencies.roll_with(&mut self.gen);
       self.item_locations.entry(item_spot).or_insert(Vec::new()).push(new_item);
     }
   }
@@ -511,7 +539,7 @@ impl GameWorld {
 
   pub fn use_item(&mut self, item_letter: char) -> UseItemResult {
     let player_mut = self.creature_list.iter_mut().find(|creature_ref| creature_ref.is_the_player).unwrap();
-    let item_to_use = {
+    let potential_item_to_use = {
       let mut cataloged_inventory = BTreeMap::new();
       for item_ref in player_mut.inventory.iter() {
         *cataloged_inventory.entry(item_ref).or_insert(0) += 1;
@@ -519,21 +547,35 @@ impl GameWorld {
       let letter_index = item_letter as u8 - 'a' as u8;
       cataloged_inventory.into_iter().nth(letter_index as usize).map(|(&item, _count)| item)
     };
-    match item_to_use {
+    match potential_item_to_use {
       Some(item) => {
-        if item.is_potion() {
-          apply_potion(&item, player_mut, &mut self.gen);
-          for i in 0..player_mut.inventory.len() {
-            if player_mut.inventory[i] == item {
-              player_mut.inventory.remove(i);
-              break;
-            }
+        match item {
+          Item::BombBlast | Item::BombIce => return UseItemResult::ItemNeedsTarget,
+          Item::PotionHealth | Item::PotionStrength => {
+            apply_potion(&item, player_mut, &mut self.gen);
           }
-          self.run_world_turn();
-          UseItemResult::ItemUsed
-        } else {
-          UseItemResult::ItemNeedsTarget
+          Item::CrystalPlate(_) | Item::Fernweave(_) | Item::LobsterMail(_) => {
+            player_mut.equipped_armor.take().map(|old_armor| player_mut.inventory.push(old_armor));
+            player_mut.equipped_armor = Some(item);
+            player_mut.armor = item.armor_value();
+          }
+          Item::Dagger(_) | Item::Warhammer(_) => {
+            player_mut.equipped_weapon.take().map(|old_weapon| {
+              player_mut.damage_step -= old_weapon.damage_step();
+              player_mut.inventory.push(old_weapon);
+            });
+            player_mut.equipped_weapon = Some(item);
+            player_mut.damage_step += item.damage_step();
+          }
         }
+        for i in 0..player_mut.inventory.len() {
+          if player_mut.inventory[i] == item {
+            player_mut.inventory.remove(i);
+            break;
+          }
+        }
+        self.run_world_turn();
+        UseItemResult::ItemUsed
       }
       None => UseItemResult::NoSuchItem,
     }

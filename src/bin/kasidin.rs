@@ -22,6 +22,12 @@ const TILE_GRID_WIDTH: usize = 66;
 const TILE_GRID_HEIGHT: usize = 50;
 const KINDA_LIME_GREEN: u32 = rgb32!(128, 255, 20);
 
+pub const WALL_TILE: u8 = 11 + 13 * 16;
+pub const POTION_GLYPH: u8 = 13 + 10 * 16;
+pub const BOMB_GLYPH: u8 = 15 + 0 * 16;
+pub const ARMOR_GLYPH: u8 = 11 + 5 * 16;
+pub const WEAPON_GLYPH: u8 = 9 + 2 * 16;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DisplayMode {
   Game,
@@ -222,34 +228,31 @@ fn draw_game(term: &mut DwarfTerm, game: &GameWorld, seen_set: &HashSet<Location
       z: game.player_location.z,
     } + offset;
     let (glyph, color) = if seen_set.contains(&loc_for_this_screen_position) {
-      match game.creature_locations.get(&loc_for_this_screen_position) {
-        Some(cid_ref) => {
+      game
+        .creature_locations
+        .get(&loc_for_this_screen_position)
+        .map(|cid_ref| {
           let creature_here = game
             .creature_list
             .iter()
             .find(|&creature_ref| &creature_ref.id == cid_ref)
             .expect("Our locations and list are out of sync!");
           (creature_here.icon, creature_here.color)
-        }
-        None => match game
-          .item_locations
-          .get(&loc_for_this_screen_position)
-          .and_then(|item_vec_ref| item_vec_ref.get(0))
-        {
-          Some(Item::PotionHealth) => (POTION_GLYPH, rgb32!(250, 5, 5)),
-          Some(Item::PotionStrength) => (POTION_GLYPH, rgb32!(5, 240, 20)),
-          Some(Item::BombBlast) => (BOMB_GLYPH, rgb32!(127, 127, 127)),
-          Some(Item::BombIce) => (BOMB_GLYPH, rgb32!(153, 217, 234)),
-          None => match game.terrain.get(&loc_for_this_screen_position) {
-            Some(Terrain::Wall) => (WALL_TILE, rgb32!(155, 75, 0)),
-            Some(Terrain::Ice) => (WALL_TILE, rgb32!(112, 146, 190)),
-            Some(Terrain::Floor) => (b'.', rgb32!(128, 128, 128)),
-            Some(Terrain::StairsDown) => (b'>', rgb32!(190, 190, 190)),
-            Some(Terrain::StairsUp) => (b'<', rgb32!(190, 190, 190)),
-            None => (b' ', 0),
-          },
-        },
-      }
+        })
+        .unwrap_or_else(|| {
+          game
+            .item_locations
+            .get(&loc_for_this_screen_position)
+            .and_then(|item_vec_ref| item_vec_ref.get(0))
+            .map(|item_ref| display_of_item(*item_ref))
+            .unwrap_or_else(|| {
+              game
+                .terrain
+                .get(&loc_for_this_screen_position)
+                .map(|terrain_ref| display_of_terrain(*terrain_ref))
+                .unwrap_or((b' ', 0))
+            })
+        })
     } else {
       (b' ', 0)
     };
@@ -265,18 +268,15 @@ fn draw_game(term: &mut DwarfTerm, game: &GameWorld, seen_set: &HashSet<Location
   ids_status_slice_mut.set_all(0);
   debug_assert_eq!(1, STATUS_HEIGHT);
   let mut status_line_u8_slice_mut: &mut [u8] = unsafe { ::std::slice::from_raw_parts_mut(ids_status_slice_mut.as_mut_ptr(), full_extent.0) };
-  let player_hp = game
-    .creature_list
-    .iter()
-    .find(|creature_ref| creature_ref.is_the_player)
-    .unwrap()
-    .hit_points;
+  let player_ref = game.creature_list.iter().find(|creature_ref| creature_ref.is_the_player).unwrap();
   write!(
     status_line_u8_slice_mut,
-    "HP: {}, Enemies: {}, Z:{}",
-    player_hp,
+    "HP: {}, Enemies: {}, Z:{}, Damage Step: {}, Armor: {}",
+    player_ref.hit_points,
     game.creature_list.len() - 1,
-    game.player_location.z
+    game.player_location.z,
+    player_ref.damage_step,
+    player_ref.armor
   ).ok();
 }
 
@@ -377,34 +377,31 @@ fn draw_targeting(term: &mut DwarfTerm, game: &GameWorld, seen_set: &HashSet<Loc
       z: game.player_location.z,
     } + offset;
     let (glyph, color) = if seen_set.contains(&loc_for_this_screen_position) {
-      match game.creature_locations.get(&loc_for_this_screen_position) {
-        Some(cid_ref) => {
+      game
+        .creature_locations
+        .get(&loc_for_this_screen_position)
+        .map(|cid_ref| {
           let creature_here = game
             .creature_list
             .iter()
             .find(|&creature_ref| &creature_ref.id == cid_ref)
             .expect("Our locations and list are out of sync!");
           (creature_here.icon, creature_here.color)
-        }
-        None => match game
-          .item_locations
-          .get(&loc_for_this_screen_position)
-          .and_then(|item_vec_ref| item_vec_ref.get(0))
-        {
-          Some(Item::PotionHealth) => (POTION_GLYPH, rgb32!(250, 5, 5)),
-          Some(Item::PotionStrength) => (POTION_GLYPH, rgb32!(5, 240, 20)),
-          Some(Item::BombBlast) => (BOMB_GLYPH, rgb32!(127, 127, 127)),
-          Some(Item::BombIce) => (BOMB_GLYPH, rgb32!(153, 217, 234)),
-          None => match game.terrain.get(&loc_for_this_screen_position) {
-            Some(Terrain::Wall) => (WALL_TILE, rgb32!(155, 75, 0)),
-            Some(Terrain::Ice) => (WALL_TILE, rgb32!(112, 146, 190)),
-            Some(Terrain::Floor) => (b'.', rgb32!(128, 128, 128)),
-            Some(Terrain::StairsDown) => (b'>', rgb32!(190, 190, 190)),
-            Some(Terrain::StairsUp) => (b'<', rgb32!(190, 190, 190)),
-            None => (b' ', 0),
-          },
-        },
-      }
+        })
+        .unwrap_or_else(|| {
+          game
+            .item_locations
+            .get(&loc_for_this_screen_position)
+            .and_then(|item_vec_ref| item_vec_ref.get(0))
+            .map(|item_ref| display_of_item(*item_ref))
+            .unwrap_or_else(|| {
+              game
+                .terrain
+                .get(&loc_for_this_screen_position)
+                .map(|terrain_ref| display_of_terrain(*terrain_ref))
+                .unwrap_or((b' ', 0))
+            })
+        })
     } else {
       (b' ', 0)
     };
@@ -433,4 +430,28 @@ fn load_game(game: &mut GameWorld) -> std::io::Result<()> {
     bincode::deserialize(&file_bytes).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Couldn't deserialize the game!"))?;
   *game = decoded;
   Ok(())
+}
+
+fn display_of_item(item: Item) -> (u8, u32) {
+  match item {
+    Item::PotionHealth => (POTION_GLYPH, rgb32!(250, 5, 5)),
+    Item::PotionStrength => (POTION_GLYPH, rgb32!(5, 240, 20)),
+    Item::BombBlast => (BOMB_GLYPH, rgb32!(127, 127, 127)),
+    Item::BombIce => (BOMB_GLYPH, rgb32!(153, 217, 234)),
+    Item::CrystalPlate(_) => (ARMOR_GLYPH, rgb32!(0, 162, 232)),
+    Item::LobsterMail(_) => (ARMOR_GLYPH, rgb32!(237, 28, 36)),
+    Item::Fernweave(_) => (ARMOR_GLYPH, rgb32!(34, 177, 76)),
+    Item::Dagger(_) => (WEAPON_GLYPH, rgb32!(195, 195, 195)),
+    Item::Warhammer(_) => (WEAPON_GLYPH, rgb32!(127, 127, 127)),
+  }
+}
+
+fn display_of_terrain(terrain: Terrain) -> (u8, u32) {
+  match terrain {
+    Terrain::Wall => (WALL_TILE, rgb32!(155, 75, 0)),
+    Terrain::Ice => (WALL_TILE, rgb32!(112, 146, 190)),
+    Terrain::Floor => (b'.', rgb32!(128, 128, 128)),
+    Terrain::StairsDown => (b'>', rgb32!(190, 190, 190)),
+    Terrain::StairsUp => (b'<', rgb32!(190, 190, 190)),
+  }
 }

@@ -72,6 +72,59 @@ impl PCG32 {
   }
 }
 
+#[derive(Debug, Clone)]
+pub struct FrequencyChart<T: Clone> {
+  rand_range: RandRangeInclusive32,
+  items: Vec<(u32, T)>,
+}
+
+impl<T: Clone> FrequencyChart<T> {
+  pub fn new(item: T, frequency: u32) -> Self {
+    let frequency = frequency.max(1);
+    Self {
+      rand_range: RandRangeInclusive32::new(1..=frequency),
+      items: vec![(frequency, item)],
+    }
+  }
+
+  pub fn push_item(&mut self, item: T, frequency: u32) {
+    let frequency = frequency.max(1);
+    self.rand_range = RandRangeInclusive32::new(1..=self.rand_range.high() + frequency);
+    self.items.push((frequency, item));
+  }
+
+  /// ```rust
+  /// use roguelike_tutorial_2018::*;
+  /// let mut gen = &mut PCG32::new(u64_from_time());
+  /// let mut chart = FrequencyChart::new('a', 1);
+  /// // with just item we will ALWAYS see that item
+  /// for _ in 0 .. 100 {
+  ///   assert_eq!(chart.roll_with(gen), 'a');
+  /// }
+  /// chart.push_item('b', 1);
+  /// let mut totals = [0i32,0];
+  /// for _ in 0 .. 1000 {
+  ///   match chart.roll_with(gen) {
+  ///     'a' => totals[0] += 1,
+  ///     'b' => totals[1] += 1,
+  ///     z => panic!("impossible output {}",z),
+  ///   }
+  /// }
+  /// assert!((totals[0] - totals[1]).abs() < 100);
+  /// ```
+  pub fn roll_with(&self, gen: &mut PCG32) -> T {
+    let mut roll = self.rand_range.roll_with(gen);
+    for item_ref in self.items.iter() {
+      if roll <= item_ref.0 {
+        return item_ref.1.clone();
+      } else {
+        roll -= item_ref.0;
+      }
+    }
+    unreachable!("What the heck?");
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RandRangeInclusive32 {
   base: u32,
@@ -82,7 +135,7 @@ pub struct RandRangeInclusive32 {
 impl RandRangeInclusive32 {
   pub fn new(range_incl: RangeInclusive<u32>) -> Self {
     let (low, high) = range_incl.into_inner();
-    assert!(low < high, "RandRangeInclusive32 must go from low to high, got {} ..= {}", low, high);
+    assert!(low <= high, "RandRangeInclusive32 must go from low to high, got {} ..= {}", low, high);
     let base = low;
     let width = (high - low) + 1;
     debug_assert!(width > 0);
@@ -114,6 +167,8 @@ impl RandRangeInclusive32 {
   pub fn roll_with(&self, gen: &mut PCG32) -> u32 {
     loop {
       if let Some(output) = self.convert(gen.next_u32()) {
+        debug_assert!(output >= self.low());
+        debug_assert!(output <= self.high());
         return output;
       }
     }
