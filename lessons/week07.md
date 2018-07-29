@@ -536,3 +536,18 @@ we'll just stick that into the status bar for now.
 ![now-with-status](https://github.com/Lokathor/roguelike-tutorial-2018/blob/master/screenshots/week07-03.png)
 
 And we're good!
+
+One note though: remember how we made the kestrels have the depth added to their
+hit points last time? Well, we need to fix that, because the depth is usually
+negative!
+
+```rust
+  fn new_kestrel(cid: usize, depth: i32) -> Self {
+    let mut out = Self::new(cid, b'k', KESTREL_RED);
+    out.hit_points = 8 + depth.abs();
+    out.damage_step = 3;
+    out
+  }
+```
+
+Okay, now we're really good.
